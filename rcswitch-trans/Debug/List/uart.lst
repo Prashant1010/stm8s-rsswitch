@@ -1,0 +1,126 @@
+###############################################################################
+#
+# IAR C/C++ Compiler V2.10.4.157 for STM8                 15/Jul/2016  17:05:54
+# Copyright 2010-2015 IAR Systems AB.
+#
+#    Source file  =  C:\Users\prashant\Desktop\rcswitch-trans\lib\src\uart.c
+#    Command line =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\lib\src\uart.c -e -On
+#        --no_cse --no_unroll --no_inline --no_code_motion --no_tbaa
+#        --no_cross_call --debug --code_model small --data_model medium -o
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\Obj\ --dlib_config
+#        "C:\Program Files (x86)\IAR Systems\Embedded Workbench
+#        7.0\stm8\LIB\dlstm8smn.h" -lcN
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\List\ -I
+#        C:\Users\prashant\Desktop\rcswitch-trans\stdlibraries\inc\ -I
+#        C:\Users\prashant\Desktop\rcswitch-trans\lib\inc\ --vregs 16
+#    List file    =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\List\uart.lst
+#    Object file  =  C:\Users\prashant\Desktop\rcswitch-trans\Debug\Obj\uart.o
+#
+###############################################################################
+
+C:\Users\prashant\Desktop\rcswitch-trans\lib\src\uart.c
+      1          //uart.c
+      2          
+      3          #include "uart.h"
+      4          #include "delay.h"
+      5          
+      6          char uartstr[10];
+      7          uint32_t num = 100;
+      8          uint8_t status = 0;
+      9          
+     10          void uart_config(void)
+     11          {
+     12            UART2_DeInit();
+     13            UART2_Init((u32)9600, UART2_WORDLENGTH_8D,UART2_STOPBITS_1, UART2_PARITY_NO, UART2_SYNCMODE_CLOCK_DISABLE  ,UART2_MODE_TXRX_ENABLE);
+     14            UART2_ITConfig(UART2_IT_RXNE, ENABLE);
+     15            __enable_interrupt();
+     16            UART2_Cmd(ENABLE);
+     17          }
+     18          
+     19          
+     20          void uart_print(char *str)
+     21          {
+     22            while( (*str) )
+     23            {
+     24              UART2_SendData8(*str++);
+     25              while(UART2_GetFlagStatus(UART2_FLAG_TXE) == RESET);    
+     26            }
+     27          }
+     28          
+     29          uint32_t pow(int exp, int pow)
+     30          {
+     31            int i=0;
+     32            uint32_t num = 1;
+     33            if(pow == 0){
+     34              return 1;
+     35            }
+     36            else if(pow == 1){
+     37              return exp;
+     38            }
+     39            for(i=0; i<pow; i++)
+     40            {
+     41              num = num * exp;
+     42            }
+     43            return num;
+     44          }
+     45          
+     46          
+     47          uint32_t str_to_u32(void)
+     48          {
+     49            int i = 0, j = 0;
+     50            uint32_t number = 0;
+     51            while(uartstr[i++] != '\0');
+     52            i = i - 2;
+     53            while(i >= 0)
+     54            {
+     55              number += ((int)(uartstr[j++] - '0')) * pow(10,i);
+     56              i--;
+     57            }
+     58            return number;
+     59          }
+     60          
+     61            
+     62          INTERRUPT_HANDLER(UART2_RX_IRQHandler, 21)
+     63          {
+     64            uint8_t i = 0;
+     65            if(UART2_GetITStatus(UART2_IT_RXNE)!=RESET)
+     66            {
+     67              UART2_ClearFlag(UART2_IT_RXNE);
+     68              uartstr[i] = UART2_ReceiveData8();
+     69              while(uartstr[i++] != 'E')
+     70              {
+     71                while(UART2_GetITStatus(UART2_IT_RXNE)==RESET);{
+     72                  uartstr[i] = UART2_ReceiveData8();
+     73                }
+     74              }
+     75              uartstr[i-1] = '\0';
+     76            }
+     77            num = str_to_u32();
+     78            status = 1;
+     79          }
+
+   Section sizes:
+
+   Bytes  Function/Label
+   -----  --------------
+     131  UART2_RX_IRQHandler
+       4  num
+      86  pow
+       1  status
+     106  str_to_u32
+      42  uart_config
+      36  uart_print
+      10  uartstr
+
+ 
+  11 bytes in section .near.bss
+   4 bytes in section .near.data
+ 401 bytes in section .near_func.text
+ 
+ 401 bytes of CODE memory
+  15 bytes of DATA memory
+
+Errors: none
+Warnings: 2

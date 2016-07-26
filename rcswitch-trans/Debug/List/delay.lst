@@ -1,0 +1,85 @@
+###############################################################################
+#
+# IAR C/C++ Compiler V2.10.4.157 for STM8                 15/Jul/2016  14:47:07
+# Copyright 2010-2015 IAR Systems AB.
+#
+#    Source file  =  C:\Users\prashant\Desktop\rcswitch-trans\lib\src\delay.c
+#    Command line =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\lib\src\delay.c -e -On
+#        --no_cse --no_unroll --no_inline --no_code_motion --no_tbaa
+#        --no_cross_call --debug --code_model small --data_model medium -o
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\Obj\ --dlib_config
+#        "C:\Program Files (x86)\IAR Systems\Embedded Workbench
+#        7.0\stm8\LIB\dlstm8smn.h" -lcN
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\List\ -I
+#        C:\Users\prashant\Desktop\rcswitch-trans\stdlibraries\inc\ -I
+#        C:\Users\prashant\Desktop\rcswitch-trans\lib\inc\ --vregs 16
+#    List file    =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\List\delay.lst
+#    Object file  =  C:\Users\prashant\Desktop\rcswitch-trans\Debug\Obj\delay.o
+#
+###############################################################################
+
+C:\Users\prashant\Desktop\rcswitch-trans\lib\src\delay.c
+      1          //delay.c
+      2          
+      3          #include "delay.h"
+      4          
+      5          void clk_config(void)
+      6          {
+      7            CLK_DeInit();
+      8            CLK_HSICmd(ENABLE);  
+      9            CLK_HSIPrescalerConfig(CLK_PRESCALER_HSIDIV1);
+     10            
+     11          }
+     12          
+     13          void timer_init()
+     14          {
+     15            clk_config();
+     16            TIM2_DeInit();
+     17            TIM2_TimeBaseInit(TIM2_PRESCALER_1, 0);
+     18            //TIM2_Cmd(ENABLE);
+     19          }
+     20          
+     21          void delay_ms(uint16_t ms)
+     22          {
+     23            uint16_t i = 0;
+     24            ms = ms / 4;
+     25            for(i=0; i<ms; i++){
+     26              delay_us(4000);
+     27            }
+     28          }
+     29          
+     30          void delay_us(uint32_t us)
+     31          {
+     32            if(us > 4000)
+     33            {
+     34              delay_ms(us/1000);
+     35            }
+     36            us = 16 * us;
+     37            TIM2_SetCounter(0);
+     38            TIM2_ARRPreloadConfig(DISABLE);
+     39            TIM2_SetAutoreload(us);
+     40            
+     41            TIM2_Cmd(ENABLE);
+     42            while(TIM2_GetFlagStatus(TIM2_FLAG_UPDATE) == RESET);
+     43            TIM2_ClearFlag(TIM2_FLAG_UPDATE);
+     44            TIM2_Cmd(DISABLE);
+     45          }
+
+   Section sizes:
+
+   Bytes  Function/Label
+   -----  --------------
+      13  clk_config
+      45  delay_ms
+      87  delay_us
+      12  timer_init
+
+ 
+ 157 bytes in section .near_func.text
+ 
+ 157 bytes of CODE memory
+
+Errors: none
+Warnings: 1

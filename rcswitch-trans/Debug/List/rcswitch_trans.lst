@@ -1,0 +1,528 @@
+###############################################################################
+#
+# IAR C/C++ Compiler V2.10.4.157 for STM8                 15/Jul/2016  14:47:08
+# Copyright 2010-2015 IAR Systems AB.
+#
+#    Source file  =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\lib\src\rcswitch_trans.c
+#    Command line =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\lib\src\rcswitch_trans.c -e
+#        -On --no_cse --no_unroll --no_inline --no_code_motion --no_tbaa
+#        --no_cross_call --debug --code_model small --data_model medium -o
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\Obj\ --dlib_config
+#        "C:\Program Files (x86)\IAR Systems\Embedded Workbench
+#        7.0\stm8\LIB\dlstm8smn.h" -lcN
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\List\ -I
+#        C:\Users\prashant\Desktop\rcswitch-trans\stdlibraries\inc\ -I
+#        C:\Users\prashant\Desktop\rcswitch-trans\lib\inc\ --vregs 16
+#    List file    =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\List\rcswitch_trans.lst
+#    Object file  =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\Obj\rcswitch_trans.o
+#
+###############################################################################
+
+C:\Users\prashant\Desktop\rcswitch-trans\lib\src\rcswitch_trans.c
+      1          //rcswitch_trans.c
+      2          
+      3          #include "rcswitch_trans.h"
+      4          
+      5          #ifdef RaspberryPi
+      6              // PROGMEM and _P functions are for AVR based microprocessors,
+      7              // so we must normalize these for the ARM processor:
+      8              #define PROGMEM
+      9              #define memcpy_P(dest, src, num) memcpy((dest), (src), (num))
+     10          #endif
+     11          
+     12          #ifdef ESP8266
+     13              // interrupt handler and related code must be in RAM on ESP8266,
+     14              // according to issue #46.
+     15              #define RECEIVE_ATTR ICACHE_RAM_ATTR
+     16          #else
+     17              #define RECEIVE_ATTR
+     18          #endif
+     19          
+     20          
+     21          /* Format for protocol definitions:
+     22           * {pulselength, Sync bit, "0" bit, "1" bit}
+     23           * 
+     24           * pulselength: pulse length in microseconds, e.g. 350
+     25           * Sync bit: {1, 31} means 1 high pulse and 31 low pulses
+     26           *     (perceived as a 31*pulselength long pulse, total length of sync bit is
+     27           *     32*pulselength microseconds), i.e:
+     28           *      _
+     29           *     | |_______________________________ (don't count the vertical bars)
+     30           * "0" bit: waveform for a data bit of value "0", {1, 3} means 1 high pulse
+     31           *     and 3 low pulses, total length (1+3)*pulselength, i.e:
+     32           *      _
+     33           *     | |___
+     34           * "1" bit: waveform for a data bit of value "1", e.g. {3,1}:
+     35           *      ___
+     36           *     |   |_
+     37           *
+     38           * These are combined to form Tri-State bits when sending or receiving codes.
+     39           */
+     40          
+     41          
+     42          int nTransmitterPin;
+     43          int nRepeatTransmit;    
+     44          struct Protocol protocol;
+     45          
+     46          static struct Protocol proto[] = {
+     47            { 350, {  1, 31 }, {  1,  3 }, {  3,  1 }, FALSE },    // protocol 1
+     48            { 650, {  1, 10 }, {  1,  2 }, {  2,  1 }, FALSE },    // protocol 2
+     49            { 100, { 30, 71 }, {  4, 11 }, {  9,  6 }, FALSE },    // protocol 3
+     50            { 380, {  1,  6 }, {  1,  3 }, {  3,  1 }, FALSE },    // protocol 4
+     51            { 500, {  6, 14 }, {  1,  2 }, {  2,  1 }, FALSE },    // protocol 5
+     52            { 450, { 23,  1 }, {  1,  2 }, {  2,  1 }, TRUE }      // protocol 6 (HT6P20B)
+     53          };
+     54          
+     55          enum {
+     56             numProto = sizeof(proto) / sizeof(proto[0])
+     57          };
+     58          
+     59          
+     60          
+     61          
+     62          void RCSwitch() {
+     63            nTransmitterPin = -1;
+     64            setRepeatTransmit(10);
+     65            setProtocol(1);
+     66          }
+     67          
+     68          
+     69          void setProtocol(int nProtocol) {
+     70            if (nProtocol < 1 || nProtocol > numProto) {
+     71              nProtocol = 1;  // TODO: trigger an error, e.g. "bad protocol" ???
+     72            }
+     73            protocol = proto[nProtocol-1];
+     74          
+     75          }
+     76          
+     77          
+     78          
+     79          /**
+     80            * Sets pulse length in microseconds
+     81            */
+     82          void setPulseLength(int nPulseLength) {
+     83            protocol.pulseLength = nPulseLength;
+     84          }
+     85          
+     86          /**
+     87           * Sets Repeat Transmits
+     88           */
+     89          void setRepeatTransmit(int RepeatTransmit) {
+     90            nRepeatTransmit = RepeatTransmit;
+     91          }
+     92          
+     93          
+     94          /**
+     95           * Enable transmissions
+     96           *
+     97           * @param nTransmitterPin    Arduino Pin to which the sender is connected to
+     98           */
+     99          void enableTransmit(int TransmitterPin) {
+    100            nTransmitterPin = TransmitterPin;
+    101            GPIO_Init(GPIOA, GPIO_PIN_5, GPIO_MODE_OUT_PP_LOW_FAST);
+    102            //pinMode(nTransmitterPin, OUTPUT);
+    103          }
+    104          
+    105          /**
+    106            * Disable transmissions
+    107            */
+    108          void disableTransmit() {
+    109            nTransmitterPin = -1;
+    110          }
+    111          
+    112          /**
+    113           * Switch a remote switch on (Type D REV)
+    114           *
+    115           * @param sGroup        Code of the switch group (A,B,C,D)
+    116           * @param nDevice       Number of the switch itself (1..3)
+    117           */
+    118          void switchOn_3(char sGroup, int nDevice) {
+    119            sendTriState( getCodeWordD(sGroup, nDevice, TRUE) );
+    120          }
+    121          
+    122          /**
+    123           * Switch a remote switch off (Type D REV)
+    124           *
+    125           * @param sGroup        Code of the switch group (A,B,C,D)
+    126           * @param nDevice       Number of the switch itself (1..3)
+    127           */
+    128          void switchOff_3(char sGroup, int nDevice) {
+    129            sendTriState( getCodeWordD(sGroup, nDevice, FALSE) );
+    130          }
+    131          
+    132          /**
+    133           * Switch a remote switch on (Type C Intertechno)
+    134           *
+    135           * @param sFamily  Familycode (a..f)
+    136           * @param nGroup   Number of group (1..4)
+    137           * @param nDevice  Number of device (1..4)
+    138            */
+    139          void switchOn_1(char sFamily, int nGroup, int nDevice) {
+    140            sendTriState( getCodeWordC(sFamily, nGroup, nDevice, TRUE) );
+    141          }
+    142          
+    143          /**
+    144           * Switch a remote switch off (Type C Intertechno)
+    145           *
+    146           * @param sFamily  Familycode (a..f)
+    147           * @param nGroup   Number of group (1..4)
+    148           * @param nDevice  Number of device (1..4)
+    149           */
+    150          void switchOff_1(char sFamily, int nGroup, int nDevice) {
+    151            sendTriState( getCodeWordC(sFamily, nGroup, nDevice, FALSE) );
+    152          }
+    153          
+    154          /**
+    155           * Switch a remote switch on (Type B with two rotary/sliding switches)
+    156           *
+    157           * @param nAddressCode  Number of the switch group (1..4)
+    158           * @param nChannelCode  Number of the switch itself (1..4)
+    159           */
+    160          void switchOn_2(int nAddressCode, int nChannelCode) {
+    161            sendTriState( getCodeWordB(nAddressCode, nChannelCode, TRUE) );
+    162          }
+    163          
+    164          /**
+    165           * Switch a remote switch off (Type B with two rotary/sliding switches)
+    166           *
+    167           * @param nAddressCode  Number of the switch group (1..4)
+    168           * @param nChannelCode  Number of the switch itself (1..4)
+    169           */
+    170          void switchOff_2(int nAddressCode, int nChannelCode) {
+    171            sendTriState( getCodeWordB(nAddressCode, nChannelCode, FALSE) );
+    172          }
+    173          
+    174          /**
+    175           * Deprecated, use switchOn(const char* sGroup, const char* sDevice) instead!
+    176           * Switch a remote switch on (Type A with 10 pole DIP switches)
+    177           *
+    178           * @param sGroup        Code of the switch group (refers to DIP switches 1..5 where "1" = on and "0" = off, if all DIP switches are on it's "11111")
+    179           * @param nChannelCode  Number of the switch itself (1..5)
+    180           */
+    181          void switchOn_0(const char* sGroup, int nChannel) {
+    182            const char* code[6] = { "00000", "10000", "01000", "00100", "00010", "00001" };
+    183            switchOn_4(sGroup, code[nChannel]);
+    184          }
+    185          
+    186          /**
+    187           * Deprecated, use switchOff(const char* sGroup, const char* sDevice) instead!
+    188           * Switch a remote switch off (Type A with 10 pole DIP switches)
+    189           *
+    190           * @param sGroup        Code of the switch group (refers to DIP switches 1..5 where "1" = on and "0" = off, if all DIP switches are on it's "11111")
+    191           * @param nChannelCode  Number of the switch itself (1..5)
+    192           */
+    193          void switchOff_0(const char* sGroup, int nChannel) {
+    194            const char* code[6] = { "00000", "10000", "01000", "00100", "00010", "00001" };
+    195            switchOff_4(sGroup, code[nChannel]);
+    196          }
+    197          
+    198          /**
+    199           * Switch a remote switch on (Type A with 10 pole DIP switches)
+    200           *
+    201           * @param sGroup        Code of the switch group (refers to DIP switches 1..5 where "1" = on and "0" = off, if all DIP switches are on it's "11111")
+    202           * @param sDevice       Code of the switch device (refers to DIP switches 6..10 (A..E) where "1" = on and "0" = off, if all DIP switches are on it's "11111")
+    203           */
+    204          void switchOn_4(const char* sGroup, const char* sDevice) {
+    205            sendTriState( getCodeWordA(sGroup, sDevice, TRUE) );
+    206          }
+    207          
+    208          /**
+    209           * Switch a remote switch off (Type A with 10 pole DIP switches)
+    210           *
+    211           * @param sGroup        Code of the switch group (refers to DIP switches 1..5 where "1" = on and "0" = off, if all DIP switches are on it's "11111")
+    212           * @param sDevice       Code of the switch device (refers to DIP switches 6..10 (A..E) where "1" = on and "0" = off, if all DIP switches are on it's "11111")
+    213           */
+    214          void switchOff_4(const char* sGroup, const char* sDevice) {
+    215            sendTriState( getCodeWordA(sGroup, sDevice, FALSE) );
+    216          }
+    217          
+    218          
+    219          /**
+    220           * Returns a char[13], representing the code word to be send.
+    221           *
+    222           */
+    223          char* getCodeWordA(const char* sGroup, const char* sDevice, bool bStatus) {
+    224            static char sReturn[13];
+    225            int nReturnPos = 0;
+    226          
+    227            for (int i = 0; i < 5; i++) {
+    228              sReturn[nReturnPos++] = (sGroup[i] == '0') ? 'F' : '0';
+    229            }
+    230          
+    231            for (int i = 0; i < 5; i++) {
+    232              sReturn[nReturnPos++] = (sDevice[i] == '0') ? 'F' : '0';
+    233            }
+    234          
+    235            sReturn[nReturnPos++] = bStatus ? '0' : 'F';
+    236            sReturn[nReturnPos++] = bStatus ? 'F' : '0';
+    237          
+    238            sReturn[nReturnPos] = '\0';
+    239            return sReturn;
+    240          }
+    241          
+    242          /**
+    243           * Encoding for type B switches with two rotary/sliding switches.
+    244           *
+    245           * The code word is a tristate word and with following bit pattern:
+    246           *
+    247           * +-----------------------------+-----------------------------+----------+------------+
+    248           * | 4 bits address              | 4 bits address              | 3 bits   | 1 bit      |
+    249           * | switch group                | switch number               | not used | on / off   |
+    250           * | 1=0FFF 2=F0FF 3=FF0F 4=FFF0 | 1=0FFF 2=F0FF 3=FF0F 4=FFF0 | FFF      | on=F off=0 |
+    251           * +-----------------------------+-----------------------------+----------+------------+
+    252           *
+    253           * @param nAddressCode  Number of the switch group (1..4)
+    254           * @param nChannelCode  Number of the switch itself (1..4)
+    255           * @param bStatus       Whether to switch on (true) or off (false)
+    256           *
+    257           * @return char[13], representing a tristate code word of length 12
+    258           */
+    259          char* getCodeWordB(int nAddressCode, int nChannelCode, bool bStatus) {
+    260            static char sReturn[13];
+    261            int nReturnPos = 0;
+    262          
+    263            if (nAddressCode < 1 || nAddressCode > 4 || nChannelCode < 1 || nChannelCode > 4) {
+    264              return 0;
+    265            }
+    266          
+    267            for (int i = 1; i <= 4; i++) {
+    268              sReturn[nReturnPos++] = (nAddressCode == i) ? '0' : 'F';
+    269            }
+    270          
+    271            for (int i = 1; i <= 4; i++) {
+    272              sReturn[nReturnPos++] = (nChannelCode == i) ? '0' : 'F';
+    273            }
+    274          
+    275            sReturn[nReturnPos++] = 'F';
+    276            sReturn[nReturnPos++] = 'F';
+    277            sReturn[nReturnPos++] = 'F';
+    278          
+    279            sReturn[nReturnPos++] = bStatus ? 'F' : '0';
+    280          
+    281            sReturn[nReturnPos] = '\0';
+    282            return sReturn;
+    283          }
+    284          
+    285          /**
+    286           * Like getCodeWord (Type C = Intertechno)
+    287           */
+    288          char* getCodeWordC(char sFamily, int nGroup, int nDevice, bool bStatus) {
+    289            static char sReturn[13];
+    290            int nReturnPos = 0;
+    291          
+    292            int nFamily = (int)sFamily - 'a';
+    293            if ( nFamily < 0 || nFamily > 15 || nGroup < 1 || nGroup > 4 || nDevice < 1 || nDevice > 4) {
+    294              return 0;
+    295            }
+    296            
+    297            // encode the family into four bits
+    298            sReturn[nReturnPos++] = (nFamily & 1) ? 'F' : '0';
+    299            sReturn[nReturnPos++] = (nFamily & 2) ? 'F' : '0';
+    300            sReturn[nReturnPos++] = (nFamily & 4) ? 'F' : '0';
+    301            sReturn[nReturnPos++] = (nFamily & 8) ? 'F' : '0';
+    302          
+    303            // encode the device and group
+    304            sReturn[nReturnPos++] = ((nDevice-1) & 1) ? 'F' : '0';
+    305            sReturn[nReturnPos++] = ((nDevice-1) & 2) ? 'F' : '0';
+    306            sReturn[nReturnPos++] = ((nGroup-1) & 1) ? 'F' : '0';
+    307            sReturn[nReturnPos++] = ((nGroup-1) & 2) ? 'F' : '0';
+    308          
+    309            // encode the status code
+    310            sReturn[nReturnPos++] = '0';
+    311            sReturn[nReturnPos++] = 'F';
+    312            sReturn[nReturnPos++] = 'F';
+    313            sReturn[nReturnPos++] = bStatus ? 'F' : '0';
+    314          
+    315            sReturn[nReturnPos] = '\0';
+    316            return sReturn;
+    317          }
+    318          
+    319          /**
+    320           * Encoding for the REV Switch Type
+    321           *
+    322           * The code word is a tristate word and with following bit pattern:
+    323           *
+    324           * +-----------------------------+-------------------+----------+--------------+
+    325           * | 4 bits address              | 3 bits address    | 3 bits   | 2 bits       |
+    326           * | switch group                | device number     | not used | on / off     |
+    327           * | A=1FFF B=F1FF C=FF1F D=FFF1 | 1=0FF 2=F0F 3=FF0 | 000      | on=10 off=01 |
+    328           * +-----------------------------+-------------------+----------+--------------+
+    329           *
+    330           * Source: http://www.the-intruder.net/funksteckdosen-von-rev-uber-arduino-ansteuern/
+    331           *
+    332           * @param sGroup        Name of the switch group (A..D, resp. a..d) 
+    333           * @param nDevice       Number of the switch itself (1..3)
+    334           * @param bStatus       Whether to switch on (true) or off (false)
+    335           *
+    336           * @return char[13], representing a tristate code word of length 12
+    337           */
+    338          char* getCodeWordD(char sGroup, int nDevice, bool bStatus) {
+    339            static char sReturn[13];
+    340            int nReturnPos = 0;
+    341          
+    342            // sGroup must be one of the letters in "abcdABCD"
+    343            int nGroup = (sGroup >= 'a') ? (int)sGroup - 'a' : (int)sGroup - 'A';
+    344            if ( nGroup < 0 || nGroup > 3 || nDevice < 1 || nDevice > 3) {
+    345              return 0;
+    346            }
+    347          
+    348            for (int i = 0; i < 4; i++) {
+    349              sReturn[nReturnPos++] = (nGroup == i) ? '1' : 'F';
+    350            }
+    351          
+    352            for (int i = 1; i <= 3; i++) {
+    353              sReturn[nReturnPos++] = (nDevice == i) ? '1' : 'F';
+    354            }
+    355          
+    356            sReturn[nReturnPos++] = '0';
+    357            sReturn[nReturnPos++] = '0';
+    358            sReturn[nReturnPos++] = '0';
+    359          
+    360            sReturn[nReturnPos++] = bStatus ? '1' : '0';
+    361            sReturn[nReturnPos++] = bStatus ? '0' : '1';
+    362          
+    363            sReturn[nReturnPos] = '\0';
+    364            return sReturn;
+    365          }
+    366          
+    367          /**
+    368           * @param sCodeWord   a tristate code word consisting of the letter 0, 1, F
+    369           */
+    370          void sendTriState(const char* sCodeWord) {
+    371            // turn the tristate code word into the corresponding bit pattern, then send it
+    372            unsigned long code = 0;
+    373            unsigned int length = 0;
+    374            for (const char* p = sCodeWord; *p; p++) {
+    375              code <<= 2L;
+    376              switch (*p) {
+    377                case '0':
+    378                  // bit pattern 00
+    379                  break;
+    380                case 'F':
+    381                  // bit pattern 01
+    382                  code |= 1L;
+    383                  break;
+    384                case '1':
+    385                  // bit pattern 11
+    386                  code |= 3L;
+    387                  break;
+    388              }
+    389              length += 2;
+    390            }
+    391            send(code, length);
+    392          }
+    393          
+    394          /**
+    395           * @param sCodeWord   a binary code word consisting of the letter 0, 1
+    396           */
+    397          void _send_(const char* sCodeWord) {
+    398            // turn the tristate code word into the corresponding bit pattern, then send it
+    399            unsigned long code = 0;
+    400            unsigned int length = 0;
+    401            for (const char* p = sCodeWord; *p; p++) {
+    402              code <<= 1L;
+    403              if (*p != '0')
+    404                code |= 1L;
+    405              length++;
+    406            }
+    407            send(code, length);
+    408          }
+    409          
+    410          /**
+    411           * Transmit the first 'length' bits of the integer 'code'. The
+    412           * bits are sent from MSB to LSB, i.e., first the bit at position length-1,
+    413           * then the bit at position length-2, and so on, till finally the bit at position 0.
+    414           */
+    415          void send(unsigned long code, unsigned int length) {
+    416            if (nTransmitterPin == -1)
+    417              return;
+    418          
+    419            for (int nRepeat = 0; nRepeat < nRepeatTransmit; nRepeat++) {
+    420              for (int i = length-1; i >= 0; i--) {
+    421                if (code & (1L << i))
+    422                  transmit(protocol.one);
+    423                else
+    424                  transmit(protocol.zero);
+    425              }
+    426              transmit(protocol.syncFactor);
+    427            }
+    428          
+    429          }
+    430          
+    431          /**
+    432           * Transmit a single high-low pulse.
+    433           */
+    434          void transmit(struct HighLow pulses) {
+    435            uint8_t firstLogicLevel = (protocol.invertedSignal) ? LOW : HIGH;
+    436            uint8_t secondLogicLevel = (protocol.invertedSignal) ? HIGH : LOW;
+    437            
+    438            firstLogicLevel = !firstLogicLevel;
+    439            secondLogicLevel = !secondLogicLevel;
+    440            GPIO_Write(GPIOA, firstLogicLevel << 5);
+    441            delay_us(protocol.pulseLength * pulses.high);
+    442            GPIO_Write(GPIOA, secondLogicLevel << 5);
+    443            delay_us(protocol.pulseLength * pulses.low);
+    444          }
+    445          
+
+   Section sizes:
+
+   Bytes  Function/Label
+   -----  --------------
+       6  ?_0
+       6  ?_1
+       6  ?_2
+       6  ?_3
+       6  ?_4
+       6  ?_5
+      12  ?_6
+      12  ?_7
+      17  RCSwitch
+      77  _send_
+       6  disableTransmit
+      25  enableTransmit
+     155  getCodeWordA
+     194  getCodeWordB
+     359  getCodeWordC
+     245  getCodeWordD
+       2  nRepeatTransmit
+       2  nTransmitterPin
+      54  proto
+       9  protocol
+      13  sReturn
+      13  sReturn
+      13  sReturn
+      13  sReturn
+     140  send
+     109  sendTriState
+      46  setProtocol
+       4  setPulseLength
+       4  setRepeatTransmit
+      52  switchOff_0
+      34  switchOff_1
+      23  switchOff_2
+      28  switchOff_3
+      23  switchOff_4
+      52  switchOn_0
+      36  switchOn_1
+      24  switchOn_2
+      30  switchOn_3
+      24  switchOn_4
+     122  transmit
+
+ 
+    65 bytes in section .near.bss
+    54 bytes in section .near.data
+    60 bytes in section .near.rodata
+ 1 829 bytes in section .near_func.text
+ 
+ 1 829 bytes of CODE  memory
+    60 bytes of CONST memory
+   119 bytes of DATA  memory
+
+Errors: none
+Warnings: 1

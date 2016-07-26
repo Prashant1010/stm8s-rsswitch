@@ -1,0 +1,71 @@
+###############################################################################
+#
+# IAR C/C++ Compiler V2.10.4.157 for STM8                 15/Jul/2016  17:07:52
+# Copyright 2010-2015 IAR Systems AB.
+#
+#    Source file  =  C:\Users\prashant\Desktop\rcswitch-trans\main.c
+#    Command line =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\main.c -e -On --no_cse
+#        --no_unroll --no_inline --no_code_motion --no_tbaa --no_cross_call
+#        --debug --code_model small --data_model medium -o
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\Obj\ --dlib_config
+#        "C:\Program Files (x86)\IAR Systems\Embedded Workbench
+#        7.0\stm8\LIB\dlstm8smn.h" -lcN
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\List\ -I
+#        C:\Users\prashant\Desktop\rcswitch-trans\stdlibraries\inc\ -I
+#        C:\Users\prashant\Desktop\rcswitch-trans\lib\inc\ --vregs 16
+#    List file    =  
+#        C:\Users\prashant\Desktop\rcswitch-trans\Debug\List\main.lst
+#    Object file  =  C:\Users\prashant\Desktop\rcswitch-trans\Debug\Obj\main.o
+#
+###############################################################################
+
+C:\Users\prashant\Desktop\rcswitch-trans\main.c
+      1          //main.c
+      2          
+      3          #include "stm8s.h"
+      4          #include "delay.h"
+      5          #include "rcswitch_trans.h"
+      6          #include "uart.h"
+      7          
+      8          
+      9          
+     10          
+     11          int main( void )
+     12          {
+     13            timer_init();
+     14            uart_config();
+     15            
+     16            
+     17            GPIO_DeInit(GPIOA);
+     18            GPIO_DeInit(GPIOD);
+     19            GPIO_Init(GPIOA, GPIO_PIN_5, GPIO_MODE_OUT_PP_LOW_FAST);
+     20            
+     21          
+     22            RCSwitch();
+     23            enableTransmit(10);
+     24            
+     25            
+     26            while(1)
+     27            {
+     28                if(status == 1){
+     29                  send(num, 24);
+     30                  status = 0;
+     31                }
+     32              delay_ms(2000);
+     33            }
+     34          }
+
+   Section sizes:
+
+   Bytes  Function/Label
+   -----  --------------
+      72  main
+
+ 
+ 72 bytes in section .near_func.text
+ 
+ 72 bytes of CODE memory
+
+Errors: none
+Warnings: 2
